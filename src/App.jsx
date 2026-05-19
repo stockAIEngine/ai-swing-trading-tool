@@ -5,7 +5,8 @@ import { Activity, BarChart3, Brain, CandlestickChart, Cloud, Gauge, RefreshCw, 
 
 const DEFAULT_SYMBOLS = ["NVDA", "MSFT", "AAPL", "META", "AMZN", "TSLA", "AMD", "NFLX"];
 const RISK_REWARD = 2;
-const DEFAULT_API_KEY = "6H77L7GQDHEUSFVQ";
+const DEFAULT_FINNHUB_KEY = "d82ikdpr01qmgc0g9u0gd82ikdpr01qmgc0g9u10";
+const DEFAULT_TWELVE_DATA_KEY = "8c5f86215b1e4ed489bdb3b84101b1e1";
 
 function hashSymbol(symbol) {
   return symbol.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0);
@@ -32,31 +33,45 @@ function makeDemoCandles(symbol, days = 140) {
   });
 }
 
-async function fetchAlphaVantageDaily(symbol, apiKey) {
-  const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol=${encodeURIComponent(symbol)}&outputsize=compact&apikey=${encodeURIComponent(apiKey)}`;
+async function fetchTwelveDataDaily(symbol, apiKey) {
+  const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=1day&outputsize=140&apikey=${encodeURIComponent(apiKey)}`;
   const response = await fetch(url);
-  if (!response.ok) throw new Error(`${symbol}: network error ${response.status}`);
+  if (!response.ok) throw new Error(`${symbol}: Twelve Data network error ${response.status}`);
   const json = await response.json();
 
-  if (json.Note) throw new Error(`${symbol}: Alpha Vantage rate limit reached. Try fewer tickers or wait before refreshing.`);
-  if (json.Information) throw new Error(`${symbol}: ${json.Information}`);
-  if (json["Error Message"]) throw new Error(`${symbol}: invalid symbol or API request.`);
+  if (json.status === "error") throw new Error(`${symbol}: ${json.message || "Twelve Data returned an error."}`);
+  if (!Array.isArray(json.values)) throw new Error(`${symbol}: no daily candle data returned from Twelve Data.`);
 
-  const series = json["Time Series (Daily)"];
-  if (!series) throw new Error(`${symbol}: no daily price data returned.`);
-
-  return Object.entries(series)
-    .map(([date, row]) => ({
-      date,
-      open: Number(row["1. open"]),
-      high: Number(row["2. high"]),
-      low: Number(row["3. low"]),
-      close: Number(row["4. close"]),
-      adjustedClose: Number(row["5. adjusted close"]),
-      volume: Number(row["6. volume"])
+  return json.values
+    .map((row) => ({
+      date: row.datetime,
+      open: Number(row.open),
+      high: Number(row.high),
+      low: Number(row.low),
+      close: Number(row.close),
+      volume: Number(row.volume || 0)
     }))
-    .filter((c) => Number.isFinite(c.open) && Number.isFinite(c.high) && Number.isFinite(c.low) && Number.isFinite(c.close) && Number.isFinite(c.volume))
+    .filter((c) => Number.isFinite(c.open) && Number.isFinite(c.high) && Number.isFinite(c.low) && Number.isFinite(c.close))
     .reverse();
+}
+
+async function fetchFinnhubQuote(symbol, apiKey) {
+  const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${encodeURIComponent(apiKey)}`;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${symbol}: Finnhub network error ${response.status}`);
+  const json = await response.json();
+  if (!json || !Number.isFinite(Number(json.c)) || Number(json.c) === 0) {
+    throw new Error(`${symbol}: no live quote returned from Finnhub.`);
+  }
+  return {
+    current: Number(json.c),
+    change: Number(json.d || 0),
+    changePercent: Number(json.dp || 0),
+    high: Number(json.h || 0),
+    low: Number(json.l || 0),
+    open: Number(json.o || 0),
+    previousClose: Number(json.pc || 0)
+  };
 }
 
 function ema(values, period) {
@@ -222,32 +237,58 @@ function Stat({ label, value }) {
 export default function VisualAISwingTradingTool() {
   const [symbolsText, setSymbolsText] = useState(DEFAULT_SYMBOLS.join(", "));
   const [selected, setSelected] = useState("NVDA");
-  const [apiKey, setApiKey] = useState(DEFAULT_API_KEY);
+  const [twelveDataKey, setTwelveDataKey] = useState(DEFAULT_TWELVE_DATA_KEY);
+  const [finnhubKey, setFinnhubKey] = useState(DEFAULT_FINNHUB_KEY);
   const [liveCandles, setLiveCandles] = useState({});
+  const [liveQuotes, setLiveQuotes] = useState({});
   const [errors, setErrors] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  const symbols = useMemo(() => symbolsText.split(/[ ,\n]+/).map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, 20), [symbolsText]);
-  const rows = useMemo(() => symbols.map((symbol) => analyzeSymbol(symbol, liveCandles[symbol], liveCandles[symbol] ? "Alpha Vantage" : "Demo")).sort((a, b) => b.score - a.score || b.aiProbability - a.aiProbability), [symbols, liveCandles]);
+  const symbols = useMemo(() => symbolsText.split(/[ ,
+]+/).map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, 20), [symbolsText]);
+  const rows = useMemo(() => symbols.map((symbol) => {
+    const analyzed = analyzeSymbol(symbol, liveCandles[symbol], liveCandles[symbol] ? "Twelve Data" : "Demo");
+    return { ...analyzed, quote: liveQuotes[symbol] };
+  }).sort((a, b) => b.score - a.score || b.aiProbability - a.aiProbability), [symbols, liveCandles, liveQuotes]);
   const top = rows.find((r) => r.symbol === selected) || rows[0];
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
 
   async function loadRealData() {
     setErrors([]);
-    if (!apiKey.trim()) {
-      setErrors(["Enter an Alpha Vantage API key first."]);
+    if (!twelveDataKey.trim()) {
+      setErrors(["Enter a Twelve Data API key first."]);
       return;
     }
     setLoading(true);
     const next = {};
     const nextErrors = [];
-    for (const symbol of symbols) {
+    for (const symbol of symbols.slice(0, 3)) {
       try {
-        next[symbol] = await fetchAlphaVantageDaily(symbol, apiKey.trim());
+        next[symbol] = await fetchTwelveDataDaily(symbol, twelveDataKey.trim());
+        await sleep(900);
       } catch (error) {
         nextErrors.push(error.message || `${symbol}: unable to fetch data.`);
       }
     }
+    if (symbols.length > 3) {
+      nextErrors.push("Free API keys are limited, so this tool fetches only the first 3 tickers per click. Use fewer tickers or click again later.");
+    }
+    const quoteResults = {};
+    if (finnhubKey.trim()) {
+      for (const symbol of symbols.slice(0, 3)) {
+        try {
+          quoteResults[symbol] = await fetchFinnhubQuote(symbol, finnhubKey.trim());
+          await sleep(500);
+        } catch (error) {
+          nextErrors.push(error.message || `${symbol}: unable to fetch Finnhub quote.`);
+        }
+      }
+    }
     setLiveCandles((prev) => ({ ...prev, ...next }));
+    setLiveQuotes((prev) => ({ ...prev, ...quoteResults }));
     setErrors(nextErrors);
     setLoading(false);
   }
@@ -280,11 +321,12 @@ export default function VisualAISwingTradingTool() {
 
           <div className="rounded-[2rem] border bg-white p-5 shadow-sm">
             <div className="mb-3 flex items-center gap-2 text-xl font-black"><Cloud /> Real Data Connection</div>
-            <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} type="password" className="mb-3 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold outline-none focus:border-blue-400" placeholder="Alpha Vantage API key" />
+            <input value={twelveDataKey} onChange={(e) => setTwelveDataKey(e.target.value)} type="password" className="mb-3 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold outline-none focus:border-blue-400" placeholder="Twelve Data API key for daily candles" />
+            <input value={finnhubKey} onChange={(e) => setFinnhubKey(e.target.value)} type="password" className="mb-3 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold outline-none focus:border-blue-400" placeholder="Finnhub API key for live quote" />
             <button onClick={loadRealData} disabled={loading} className="flex w-full items-center justify-center gap-2 rounded-2xl bg-blue-600 px-4 py-3 font-black text-white shadow hover:bg-blue-700 disabled:opacity-60">
-              <RefreshCw size={18} className={loading ? "animate-spin" : ""} /> {loading ? "Loading Real Data..." : "Fetch Real Market Data"}
+              <RefreshCw size={18} className={loading ? "animate-spin" : ""} /> {loading ? "Loading Real Data..." : "Fetch Twelve Data + Finnhub"}
             </button>
-            <p className="mt-3 text-xs leading-5 text-slate-500">Uses Alpha Vantage daily adjusted OHLCV data. Free keys may be rate-limited, so use fewer tickers when testing.</p>
+            <p className="mt-3 text-xs leading-5 text-slate-500">Uses Twelve Data for daily OHLCV candles and Finnhub for live quotes. Free keys are limited, so the app fetches only the first 3 tickers per click and waits between requests.</p>
           </div>
         </section>
 
@@ -322,7 +364,7 @@ export default function VisualAISwingTradingTool() {
               <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                 <div>
                   <div className="flex items-center gap-2 text-3xl font-black"><CandlestickChart /> {top.symbol}</div>
-                  <div className="mt-2 text-slate-500">Data: {top.source} • Last candle: {top.lastUpdated}</div>
+                  <div className="mt-2 text-slate-500">Data: {top.source} • Last candle: {top.lastUpdated}{top.quote ? ` • Finnhub live: $${top.quote.current.toFixed(2)} (${top.quote.changePercent.toFixed(2)}%)` : ""}</div>
                 </div>
                 <span className={`rounded-full border px-4 py-2 text-sm font-black ${signalClass(top.signal)}`}>{top.signal} • {top.aiProbability}%</span>
               </div>
