@@ -6,7 +6,7 @@ import { Activity, BarChart3, Brain, CandlestickChart, Cloud, Gauge, RefreshCw, 
 const DEFAULT_SYMBOLS = ["NVDA", "MSFT", "AAPL", "META", "AMZN", "TSLA", "AMD", "NFLX"];
 const RISK_REWARD = 2;
 const DEFAULT_FINNHUB_KEY = "d82ikdpr01qmgc0g9u0gd82ikdpr01qmgc0g9u10";
-const DEFAULT_TWELVE_DATA_KEY = "8c5f86215b1e4ed489bdb3b84101b1e1";
+const DEFAULT_TWELVE_DATA_KEY = "8c5f86215b1e4ed489bdb3b84101b1e1"; 
 
 function hashSymbol(symbol) {
   return symbol.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0);
