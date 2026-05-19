@@ -1,30 +1,11 @@
 # AI Swing Trading Tool
 
-A Vite + React visual trading scanner using Alpha Vantage daily OHLCV data.
+React + Vite trading dashboard for GitHub Pages.
 
-## Run locally
+## GitHub Pages setup
 
-```bash
-npm install
-npm run dev
-```
-
-## Deploy online
-
-Upload this folder to GitHub, then import it into Vercel.
-
-Build command:
-
-```bash
-npm run build
-```
-
-Output folder:
-
-```text
-dist
-```
-
-## Important
-
-This tool is for educational use only and is not financial advice.
+1. Upload all files to your GitHub repo.
+2. In `vite.config.js`, change `base: '/ai-swing-trading-tool/'` to match your exact repo name.
+3. Go to Settings > Pages.
+4. Set Source to GitHub Actions.
+5. Go to Actions and run the deploy workflow.
